@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Проверка сенсора телефона</title>
+<style>
+:root{--bg:#f4f5f7;--fg:#14171f;--muted:#5d6475;--card:#fff;--accent:#2f6df6;--ok:#22a559;--line:#d9dce4;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1218;--fg:#eef0f5;--muted:#9aa2b5;--card:#1a1f2a;--accent:#5b8cff;--ok:#33c476;--line:#2c3342}}
+:root[data-theme="dark"]{--bg:#0f1218;--fg:#eef0f5;--muted:#9aa2b5;--card:#1a1f2a;--accent:#5b8cff;--ok:#33c476;--line:#2c3342}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overscroll-behavior:none}
+.home{max-width:520px;margin:0 auto;padding:28px 20px}
+h1{font-size:26px;margin:0 0 8px}
+p{color:var(--muted);line-height:1.5;margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;margin-bottom:14px}
+.card h2{margin:0 0 6px;font-size:18px}
+.card p{margin:0 0 14px;font-size:14px}
+button{font:inherit;border:0;border-radius:12px;padding:12px 18px;background:var(--accent);color:#fff;font-weight:600;cursor:pointer}
+button.ghost{background:transparent;color:var(--fg);border:1px solid var(--line)}
+.info{font-size:13px;color:var(--muted)}
+#test{position:fixed;inset:0;display:none;flex-direction:column;background:var(--bg);padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+#bar{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--card)}
+#bar button{padding:8px 14px;font-size:14px}
+#status{flex:1;font-size:14px;text-align:center}
+#wrap{flex:1;position:relative;min-height:0}
+canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
+#done{position:absolute;inset:0;display:none;align-items:center;justify-content:center;pointer-events:none}
+#done div{background:var(--ok);color:#fff;font-weight:700;font-size:22px;padding:18px 26px;border-radius:16px;text-align:center}
+</style>
+</head>
+<body>
+<div class="home" id="home">
+  <h1>Проверка сенсора</h1>
+  <p>Тест сенсорного экрана телефона: найдите «мёртвые» зоны и проверьте мультитач. Открывайте страницу на телефоне.</p>
+  <div class="card">
+    <h2>Сетка</h2>
+    <p>Проведите пальцем по всему экрану, чтобы закрасить все клетки. Если какая-то клетка не закрашивается — там проблема с сенсором.</p>
+    <button onclick="start('grid')">Начать тест</button>
+  </div>
+  <div class="card">
+    <h2>Рисование и мультитач</h2>
+    <p>Рисуйте несколькими пальцами сразу. Линии должны быть ровными и без обрывов, а счётчик — показывать число касаний.</p>
+    <button onclick="start('draw')">Начать тест</button>
+  </div>
+  <div class="info" id="support"></div>
+</div>
+
+<div id="test">
+  <div id="bar">
+    <button class="ghost" onclick="stop()">← Назад</button>
+    <div id="status"></div>
+    <button class="ghost" onclick="reset()">Сброс</button>
+  </div>
+  <div id="wrap"><canvas id="cv"></canvas><div id="done"><div>Сенсор работает исправно ✓</div></div></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d');
+let mode = null, W = 0, H = 0, size = 0, cols = 0, rows = 0, filled = null, count = 0;
+const last = new Map(), active = new Set();
+let maxTouches = 0;
+
+$('support').textContent = 'Максимум касаний, которые сообщает устройство: ' + (navigator.maxTouchPoints || 'нет данных');
+
+function colorOf(id){ return 'hsl(' + ((id * 67) % 360) + ',80%,55%)'; }
+function css(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+function resize(){
+  const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  W = r.width; H = r.height;
+  cv.width = W * d; cv.height = H * d;
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+  reset();
+}
+
+function start(m){
+  mode = m;
+  $('home').style.display = 'none';
+  $('test').style.display = 'flex';
+  try { document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); } catch(e){}
+  resize();
+}
+function stop(){
+  mode = null;
+  $('test').style.display = 'none';
+  $('home').style.display = 'block';
+  try { document.fullscreenElement && document.exitFullscreen(); } catch(e){}
+}
+
+function reset(){
+  last.clear(); active.clear(); maxTouches = 0; count = 0;
+  $('done').style.display = 'none';
+  ctx.clearRect(0, 0, W, H);
+  if (mode === 'grid'){
+    size = Math.round(Math.min(W, H) / 7);
+    cols = Math.ceil(W / size); rows = Math.ceil(H / size);
+    filled = new Uint8Array(cols * rows);
+    ctx.strokeStyle = css('--line'); ctx.lineWidth = 1;
+    for (let c = 0; c <= cols; c++){ ctx.beginPath(); ctx.moveTo(c * size, 0); ctx.lineTo(c * size, H); ctx.stroke(); }
+    for (let r = 0; r <= rows; r++){ ctx.beginPath(); ctx.moveTo(0, r * size); ctx.lineTo(W, r * size); ctx.stroke(); }
+    status();
+  } else if (mode === 'draw') status();
+}
+
+function status(){
+  if (mode === 'grid') $('status').textContent = 'Закрашено: ' + Math.round(count / (cols * rows) * 100) + '%';
+  else if (mode === 'draw') $('status').textContent = 'Касаний: ' + active.size + ' · максимум: ' + maxTouches;
+}
+
+function mark(x, y){
+  const c = Math.floor(x / size), r = Math.floor(y / size);
+  if (c < 0 || r < 0 || c >= cols || r >= rows) return;
+  const i = r * cols + c;
+  if (filled[i]) return;
+  filled[i] = 1; count++;
+  ctx.fillStyle = css('--ok');
+  ctx.fillRect(c * size + 1, r * size + 1, size - 1, size - 1);
+  status();
+  if (count === cols * rows) $('done').style.display = 'flex';
+}
+
+function pos(e){ const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+
+cv.addEventListener('pointerdown', e => {
+  if (!mode) return;
+  e.preventDefault();
+  try { cv.setPointerCapture(e.pointerId); } catch(_){}
+  const p = pos(e);
+  last.set(e.pointerId, p); active.add(e.pointerId);
+  maxTouches = Math.max(maxTouches, active.size);
+  if (mode === 'grid') mark(p[0], p[1]);
+  else { ctx.fillStyle = colorOf(e.pointerId); ctx.beginPath(); ctx.arc(p[0], p[1], 6, 0, 7); ctx.fill(); }
+  status();
+});
+
+cv.addEventListener('pointermove', e => {
+  if (!mode || !last.has(e.pointerId)) return;
+  e.preventDefault();
+  const a = last.get(e.pointerId), b = pos(e);
+  if (mode === 'grid'){
+    const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 8));
+    for (let k = 1; k <= n; k++) mark(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n);
+  } else {
+    ctx.strokeStyle = colorOf(e.pointerId); ctx.lineWidth = 6; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+  }
+  last.set(e.pointerId, b);
+});
+
+['pointerup', 'pointercancel'].forEach(t => cv.addEventListener(t, e => {
+  last.delete(e.pointerId); active.delete(e.pointerId); status();
+}));
+
+cv.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+window.addEventListener('resize', () => { if (mode) resize(); });
+</script>
+</body>
+</html>
